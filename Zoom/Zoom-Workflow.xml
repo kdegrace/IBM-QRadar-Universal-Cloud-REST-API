@@ -1,5 +1,27 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<Workflow name="Zoom" version="1.0" xmlns="http://qradar.ibm.com/UniversalCloudRESTAPI/Workflow/V1">
+<!--
+
+Zoom API
+https://marketplace.zoom.us/docs/api-reference/zoom-api
+
+Zoom Admin Panel
+https://marketplace.zoom.us/develop/create
+
+=====================
+A note on bookmarking:
+=====================
+This API only supports date based filtering. There is no way to specify a time. This means that if we use
+strictly the API to do bookmarking, we can only get 24 hour granularity. And that, in turn, means that we'd
+only get new events from Zoom every 24 hours.
+
+As a workaround, this workflow implements local bookmarking. The way it works is that it will fetch all
+events of the current day and only post the events that have not been posted yet. It does this by keeping
+a 'local_bookmark' timestamp and comparing it against the event times.  The downside of that events are
+redundantly fetched over and over.  If a significant amount of events were generated in the course of
+the day, it might become expensive to run the workflow near the end of that day.
+
+-->
+<Workflow name="Zoom" version="2.0" xmlns="http://qradar.ibm.com/UniversalCloudRESTAPI/Workflow/V1">
 
     <Parameters>
         <Parameter name="host" label="Host" required="true" default="api.zoom.us" />
@@ -9,8 +31,9 @@
 
     <Actions>
 
-        <!-- Initialize the Bookmark -->
+        <!-- Initialize the bookmarks -->
         <Initialize path="/bookmark" value="1970-01-01" />
+        <Initialize path="/local_bookmark" value="0" />
 
         <!-- Create an Access Token -->
         <CreateJWTAccessToken savePath="/access_token">
@@ -25,27 +48,66 @@
         </CreateJWTAccessToken>
 
         <!-- Fetch Events -->
-        <CallEndpoint url="https://${/host}/v2/report/activities" method="GET" savePath="/get_events">
-            <BearerAuthentication token="${/access_token}" />
-            <QueryParameter name="from" value="${/bookmark}" omitIfEmpty="true" />
-        </CallEndpoint>
+        <Delete path="/get_events/body/next_page_token" />
 
-        <!-- Handle Errors -->
-        <If condition="/get_events/status_code != 200">
-            <Abort reason="${/get_events/body/code}: ${/get_events/body/message}" />
-        </If>
+        <DoWhile condition="/get_events/body/next_page_token != ''">
 
-        <!-- Post Events, if any -->
-        <If condition="count(/get_events/body/activity_logs) > 0">
+            <!-- Call the endpoint. Note that the first page is a slightly different call than the rest of the pages. -->
+            <If condition="/get_events/body/next_page_token = ''" >
+                <CallEndpoint url="https://${/host}/v2/report/activities" method="GET" savePath="/get_events">
+                    <BearerAuthentication token="${/access_token}" />
+                    <QueryParameter name="page_size" value="200" />
+                    <QueryParameter name="from" value="${/bookmark}" />
+                </CallEndpoint>
+            </If>
+            <Else>
+                <CallEndpoint url="https://${/host}/v2/report/activities" method="GET" savePath="/get_events">
+                    <BearerAuthentication token="${/access_token}" />
+                    <QueryParameter name="page_size" value="200" />
+                    <QueryParameter name="next_page_token" value="${/get_events/body/next_page_token}" />
+                </CallEndpoint>
+            </Else>
 
-            <PostEvents path="/get_events/body/activity_logs" source="${/host}" />
+            <!-- Handle Errors -->
+            <If condition="/get_events/status_code != 200">
+                <Abort reason="${/get_events/body/code}: ${/get_events/body/message}" />
+            </If>
 
-            <!-- Update the bookmark -->
-            <ParseDate pattern="yyyy-MM-dd'T'HH:mm:ss'Z'" timeZone="UTC" date="${max(/get_events/body/activity_logs/time)}" savePath="/last_event_time" />
-            <FormatDate pattern="yyyy-MM-dd" timeZone="UTC" time="${/last_event_time + 86400000}" savePath="/bookmark" />
+            <!-- Post Events, if any -->
+            <If condition="count(/get_events/body/activity_logs) > 0">
 
-        </If>
+                <Set path="/new_local_bookmark" value="${/local_bookmark}" />
 
+                <ForEach item="/current_event" items="/get_events/body/activity_logs">
+
+                    <!-- Parse the event timestamp for bookmarking -->
+                    <ParseDate pattern="yyyy-MM-dd'T'HH:mm:ss'Z'" timeZone="UTC" date="${/current_event/time}" savePath="/current_event_timestamp" />
+
+                    <!-- Only post the event if it is later than the latest event timestamp, otherwise it was already posted -->
+                    <If condition="/current_event_timestamp > /local_bookmark">
+
+                        <!-- Post the event -->
+                        <PostEvent path="/current_event" source="${/host}" />
+
+                        <!-- Save this as the new latest event timestamp, if applicable -->
+                        <If condition="/current_event_timestamp > /new_local_bookmark">
+                            <Set path="/new_local_bookmark" value="${/current_event_timestamp}" />
+                        </If>
+
+                    </If>
+                    <Else>
+                        <Log type="DEBUG" message="Skipping event: ${/current_event}" />
+                    </Else>
+
+                </ForEach>
+
+                <!-- Update the bookmarks -->
+                <Set path="/local_bookmark" value="${/new_local_bookmark}" />
+                <FormatDate pattern="yyyy-MM-dd" timeZone="UTC" time="${/new_local_bookmark}" savePath="/bookmark" />
+
+            </If>
+
+        </DoWhile>
     </Actions>
 
     <Tests>
