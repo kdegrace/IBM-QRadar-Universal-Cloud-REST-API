@@ -19,8 +19,16 @@ return a "42901: Too Many Requests" error.  For this reason, this workflow uses 
 to ensure that we don't poll faster than allowed (set to a 6 minutes to avoid edge cases).  See the
 following Duo issue for details: https://github.com/duosecurity/duo_client_python/issues/101
 
+Change History:
+
+1.0
+    - Initial Version
+
+2.0
+    - Deserialize administrator log's description field into a
+
 -->
-<Workflow name="Duo" version="1.0" minimumRecurrence="360" xmlns="http://qradar.ibm.com/UniversalCloudRESTAPI/Workflow/V1">
+<Workflow name="Duo" version="2.0" minimumRecurrence="360" xmlns="http://qradar.ibm.com/UniversalCloudRESTAPI/Workflow/V1">
 
     <Parameters>
         <Parameter name="host" label="Host" required="true" />
@@ -91,11 +99,23 @@ following Duo issue for details: https://github.com/duosecurity/duo_client_pytho
             <Abort reason="${/admin_logs/response/body/code}: ${/admin_logs/response/body/message}" />
         </If>
 
-        <!-- Post the Events -->
-        <PostEvents path="/admin_logs/response/body/response" source="${/host}" />
-
-        <!-- Update the Bookmark for the next iteration -->
+        <!-- Post the Events, if any -->
         <If condition="count(/admin_logs/response/body/response) > 0" >
+
+            <!-- Post the events -->
+            <ForEach item="/event" items="/admin_logs/response/body/response">
+
+                <!--
+                    The 'description' field may contain JSON embedded into a string.  This next line
+                    will convert the embedded JSON string into a proper JSON element.
+                -->
+                <Set path="/event" value="${/event}" />
+
+                <PostEvent path="/event" source="${/host}" />
+
+            </ForEach>
+
+            <!-- Update the Bookmark for the next iteration -->
             <Set path="/admin_logs/bookmark" value="${max(/admin_logs/response/body/response/timestamp) + 1}" />
         </If>
 
