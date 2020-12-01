@@ -46,12 +46,25 @@ https://api.docs.prismacloud.io/reference
         <!-- Initialize the Bookmark -->
         <Initialize path="/get_alerts/bookmark" value="1" />
 
-        <!-- Fetch the events -->
+        <!-- Fetch the first page of events -->
         <CallEndpoint url="https://${/host}/v2/alert" method="POST" savePath="/get_alerts" >
             <QueryParameter name="detailed" value="true" />
             <RequestHeader name="Accept" value="*/*" />
             <RequestHeader name="x-redlock-auth" value="${/access_token}" />
-            <RequestBody type="application/json" encoding="UTF-8">{"timeRange":{"type": "absolute","value":{"startTime": ${/get_alerts/bookmark}}},"sortBy":["asc"]}</RequestBody>
+            <RequestBody type="application/json" encoding="UTF-8">
+                {
+                    "timeRange":
+                    {
+                        "type": "absolute",
+                        "value":
+                        {
+                            "startTime": ${/get_alerts/bookmark}
+                        }
+                    },
+                    "sortBy":["asc"],
+                    "limit": 170
+                }
+            </RequestBody>
         </CallEndpoint>
 
         <!-- Handle Errors -->
@@ -59,14 +72,42 @@ https://api.docs.prismacloud.io/reference
             <Abort reason="${/get_alerts/status_code} ${/get_alerts/status_message}" />
         </If>
 
-        <!-- Post Events, if any -->
-        <If condition="count(/get_alerts/body/items) > 0">
+        <!-- Post Events -->
+        <PostEvents path="/get_alerts/body/items" source="${/host}"/>
 
+        <!-- Update the bookmark -->
+        <ForEach item="/item" items="/get_alerts/body/items">
+            <If condition="/item/lastSeen > /get_alerts/bookmark">
+                <Set path="/get_alerts/bookmark" value="${/item/lastSeen + 1}" />
+            </If>
+        </ForEach>
+
+        <!-- Fetch the remaining pages of events -->
+        <While condition="/get_alerts/body/nextPageToken != null">
+
+            <CallEndpoint url="https://${/host}/v2/alert" method="POST" savePath="/get_alerts" >
+                <QueryParameter name="detailed" value="true" />
+                <RequestHeader name="Accept" value="*/*" />
+                <RequestHeader name="x-redlock-auth" value="${/access_token}" />
+                <RequestBody type="application/json" encoding="UTF-8">{ "pageToken": "${/get_alerts/body/nextPageToken}" }</RequestBody>
+            </CallEndpoint>
+
+            <!-- Handle Errors -->
+            <If condition="/get_alerts/status_code != 200">
+                <Abort reason="${/get_alerts/status_code} ${/get_alerts/status_message}" />
+            </If>
+
+            <!-- Post Events -->
             <PostEvents path="/get_alerts/body/items" source="${/host}"/>
 
-            <Set path="/get_alerts/bookmark" value="${max(/get_alerts/body/items/lastSeen) + 1}" />
+            <!-- Update the bookmark -->
+            <ForEach item="/item" items="/get_alerts/body/items">
+                <If condition="/item/lastSeen > /get_alerts/bookmark">
+                    <Set path="/get_alerts/bookmark" value="${/item/lastSeen + 1}" />
+                </If>
+            </ForEach>
 
-        </If>
+        </While>
 
     </Actions>
 
