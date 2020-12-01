@@ -46,50 +46,27 @@ https://api.docs.prismacloud.io/reference
         <!-- Initialize the Bookmark -->
         <Initialize path="/get_alerts/bookmark" value="1" />
 
-        <!-- Fetch the first page of events -->
-        <CallEndpoint url="https://${/host}/v2/alert" method="POST" savePath="/get_alerts" >
-            <QueryParameter name="detailed" value="true" />
-            <RequestHeader name="Accept" value="*/*" />
-            <RequestHeader name="x-redlock-auth" value="${/access_token}" />
-            <RequestBody type="application/json" encoding="UTF-8">
-                {
-                    "timeRange":
-                    {
-                        "type": "absolute",
-                        "value":
-                        {
-                            "startTime": ${/get_alerts/bookmark}
-                        }
-                    },
-                    "sortBy":["asc"],
-                    "limit": 170
-                }
-            </RequestBody>
-        </CallEndpoint>
+        <!-- Keep fetching events while we get a next page token -->
+        <DoWhile condition="/get_alerts/body/nextPageToken != null">
 
-        <!-- Handle Errors -->
-        <If condition="/get_alerts/status_code != 200">
-            <Abort reason="${/get_alerts/status_code} ${/get_alerts/status_message}" />
-        </If>
-
-        <!-- Post Events -->
-        <PostEvents path="/get_alerts/body/items" source="${/host}"/>
-
-        <!-- Update the bookmark -->
-        <ForEach item="/item" items="/get_alerts/body/items">
-            <If condition="/item/lastSeen > /get_alerts/bookmark">
-                <Set path="/get_alerts/bookmark" value="${/item/lastSeen + 1}" />
+            <!-- Build the request body. The first request is different from the rest of the pages. -->
+            <Delete path="/request_body" />
+            <If condition="/get_alerts/body/nextPageToken = null">
+                <Set path="/request_body/timeRange/type" value="absolute" />
+                <Set path="/request_body/timeRange/value/startTime" value="${/get_alerts/bookmark}" />
+                <Add path="/request_body/sortBy" value="asc" />
+                <Set path="/request_body/limit" value="200" />
             </If>
-        </ForEach>
+            <Else>
+                <Set path="/request_body/pageToken" value="${/get_alerts/body/nextPageToken}" />
+            </Else>
 
-        <!-- Fetch the remaining pages of events -->
-        <While condition="/get_alerts/body/nextPageToken != null">
-
+            <!-- Fetch a page of events -->
             <CallEndpoint url="https://${/host}/v2/alert" method="POST" savePath="/get_alerts" >
                 <QueryParameter name="detailed" value="true" />
                 <RequestHeader name="Accept" value="*/*" />
                 <RequestHeader name="x-redlock-auth" value="${/access_token}" />
-                <RequestBody type="application/json" encoding="UTF-8">{ "pageToken": "${/get_alerts/body/nextPageToken}" }</RequestBody>
+                <RequestBody type="application/json" encoding="UTF-8">${/request_body}</RequestBody>
             </CallEndpoint>
 
             <!-- Handle Errors -->
@@ -97,17 +74,17 @@ https://api.docs.prismacloud.io/reference
                 <Abort reason="${/get_alerts/status_code} ${/get_alerts/status_message}" />
             </If>
 
-            <!-- Post Events -->
-            <PostEvents path="/get_alerts/body/items" source="${/host}"/>
+            <!-- Post Events, if any -->
+            <If condition="count(/get_alerts/body/items) > 0">
 
-            <!-- Update the bookmark -->
-            <ForEach item="/item" items="/get_alerts/body/items">
-                <If condition="/item/lastSeen > /get_alerts/bookmark">
-                    <Set path="/get_alerts/bookmark" value="${/item/lastSeen + 1}" />
-                </If>
-            </ForEach>
+                <PostEvents path="/get_alerts/body/items" source="${/host}"/>
 
-        </While>
+                <!-- Update the bookmark -->
+                <Set path="/get_alerts/bookmark" value="${max(/get_alerts/body/items/lastSeen) + 1}" />
+
+            </If>
+
+        </DoWhile>
 
     </Actions>
 
